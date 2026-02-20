@@ -6,35 +6,49 @@ const { AnimeDekhoImporter } = require('./importer.js');
 const SITE_BASE = 'https://animedekho.app';
 
 async function runAutoScrape() {
-    console.log('--- Daily Auto-Scraper (Playwright) Started ---');
+    console.log('--- Daily Auto-Scraper (Stealth Browser) Started ---');
 
-    // Launch browser to bypass Cloudflare "Just a moment"
     const browser = await chromium.launch({ headless: true });
+    // Use a very high-quality user agent and specific viewport to look more human
     const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 },
+        deviceScaleFactor: 1,
     });
-    const page = await context.newPage();
 
+    const page = await context.newPage();
     const importer = new AnimeDekhoImporter();
     let schedule = [];
 
-    // 1. Get Schedule
-    console.log('Fetching schedule via Playwright...');
+    console.log('Fetching schedule via Stealth Playwright...');
     try {
-        await page.goto(`${SITE_BASE}/home/`, { waitUntil: 'networkidle', timeout: 60000 });
+        // Go to the page - Cloudflare often waits for 5 seconds
+        await page.goto(`${SITE_BASE}/home/`, { waitUntil: 'domcontentloaded', timeout: 90000 });
 
-        // Wait for the variable to be available or the script to load
-        const html = await page.content();
+        console.log('Waiting for Cloudflare challenge to resolve (15s)...');
+        await page.waitForTimeout(15000);
+
+        // Get HTML and check if blocked
+        let html = await page.content();
+        let title = await page.title();
+
+        if (title.includes('Just a moment') || title.includes('Attention Required')) {
+            console.log('⚠️ Detected Cloudflare block. Retrying with a reload...');
+            await page.reload({ waitUntil: 'networkidle' });
+            await page.waitForTimeout(10000);
+            html = await page.content();
+            title = await page.title();
+        }
+
+        console.log('Current Page Title:', title);
+
         const match = html.match(/const scheduleData = (\[[\s\S]*?\]);/);
 
         if (!match) {
             console.error('❌ Could not find schedule data script in HTML.');
-            // Diagnostic check: is there a Cloudflare title?
-            const title = await page.title();
-            console.log('Current Page Title:', title);
-            if (title.includes('Just a moment')) {
-                console.log('⚠️ Still stuck on Cloudflare challenge. Need a manual solution or more stealth.');
-            }
+            console.log('--- HTML DEBUG (First 500 chars) ---');
+            console.log(html.substring(0, 500));
+            console.log('------------------------------------');
             await browser.close();
             process.exit(1);
         }
@@ -47,7 +61,7 @@ async function runAutoScrape() {
             process.exit(1);
         }
     } catch (e) {
-        console.error('❌ Error fetching schedule:', e.message);
+        console.error('❌ Error during browser navigation:', e.message);
         await browser.close();
         process.exit(1);
     }
