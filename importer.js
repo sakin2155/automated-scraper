@@ -16,37 +16,8 @@
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
-const mysql = require('mysql2/promise');
-// Disable dotenv logging to stdout/stderr to prevent leakage into SQL exports
-if (process.env.npm_lifecycle_event !== 'test') {
-    const dotenv = require('dotenv');
-    const originalConfig = dotenv.config;
-    dotenv.config = function (options) {
-        return originalConfig.call(this, { ...options, quiet: true });
-    };
-    dotenv.config({ silent: true });
-}
 
 const SITE_BASE = 'https://animedekho.app';
-
-// ─── DB Connection ────────────────────────────────────────────────────────────
-
-let pool;
-
-async function getPool() {
-    if (!pool) {
-        pool = mysql.createPool({
-            host: process.env.DB_HOST || 'localhost',
-            user: process.env.DB_USER || 'root',
-            password: process.env.DB_PASS || '',
-            database: process.env.DB_NAME || 'anime_db',
-            waitForConnections: true,
-            connectionLimit: 10,
-            queueLimit: 0
-        });
-    }
-    return pool;
-}
 
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 

@@ -20,26 +20,33 @@ async function fetchHTML(url) {
 async function runAutoScrape() {
     console.log('--- Daily Auto-Scraper Started ---');
     const importer = new AnimeDekhoImporter();
+    let schedule = [];
 
     // 1. Get Schedule
     console.log('Fetching schedule...');
-    const html = await fetchHTML(`${SITE_BASE}/home/`);
-    const match = html.match(/const scheduleData = (\[[\s\S]*?\]);/);
+    try {
+        const html = await fetchHTML(`${SITE_BASE}/home/`);
+        const match = html.match(/const scheduleData = (\[[\s\S]*?\]);/);
 
-    if (!match) {
-        console.error('Could not find schedule data.');
+        if (!match) {
+            console.error('❌ Could not find schedule data script in HTML.');
+            process.exit(1);
+        }
+
+        // Use a more flexible parser for JS objects
+        try {
+            schedule = new Function(`return ${match[1]}`)();
+        } catch (e) {
+            console.error('❌ Failed to parse schedule data logic:', e.message);
+            process.exit(1);
+        }
+    } catch (e) {
+        console.error('❌ Error fetching schedule:', e.message);
         process.exit(1);
     }
 
-    const schedule = JSON.parse(match[1]);
-
     // 2. Identify Today's Anime
-    // Day index: Sunday=0, Monday=1, ..., Saturday=6
-    // Schedule usually starts with Monday (index 0 in array)
-    // Adjusting to local date to find the correct day in the array
     const now = new Date();
-    // In the dashboard we use (day + 6) % 7 because Sunday is 6 in that system.
-    // Let's match the logic from index.html: const day = (new Date().getDay() + 6) % 7;
     const dayIndex = (now.getDay() + 6) % 7;
     const todaysAnime = schedule[dayIndex] || [];
 
@@ -61,7 +68,6 @@ async function runAutoScrape() {
 
         console.log(`[${i + 1}/${todaysAnime.length}] Searching: "${originalTitle}"...`);
 
-        // Fuzzy search loop (reduced version of the one in server.js)
         while (currentTitle.length > 2) {
             const results = await importer.search(currentTitle);
             if (results.length > 0) {
@@ -74,18 +80,9 @@ async function runAutoScrape() {
         if (bestMatch) {
             console.log(`✅ Found Match: ${bestMatch.title}. Extracting...`);
             try {
-                // We need to capture the output of importer logic
-                // Since importer.js is designed for CLI/Stdout, we'll mock stdout temporarily or wrap it.
-                // For simplicity in this script, we'll just manually call the detail/episode methods
-                // and build a basic SQL string.
-
                 const details = await importer.getAnimeDetails(bestMatch.url);
                 consolidatedSQL += `-- Data for ${details.title}\n`;
                 consolidatedSQL += `INSERT IGNORE INTO anime (title, description, poster_url, type) VALUES ('${details.title.replace(/'/g, "''")}', '${details.description.replace(/'/g, "''")}', '${details.poster}', '${details.type}');\n\n`;
-
-                // Add episodes logic if needed, but for a 11:50 PM scrape, 
-                // generating the basic SQL is the priority.
-
                 console.log(`✨ Scraped ${details.title} successfully.`);
             } catch (e) {
                 console.error(`Error scraping ${originalTitle}: ${e.message}`);
@@ -94,7 +91,6 @@ async function runAutoScrape() {
             console.log(`⚠️ No match found for "${originalTitle}". skipping.`);
         }
 
-        // Wait to avoid rate limits
         await new Promise(r => setTimeout(r, 2000));
     }
 
