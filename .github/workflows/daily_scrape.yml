@@ -1,0 +1,35 @@
+name: Daily Anime Scrape
+
+on:
+  schedule:
+    # 17:50 UTC is 11:50 PM in UTC+6 (User's timezone roughly)
+    - cron: '50 17 * * *'
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install Dependencies
+        run: |
+          # No heavy deps needed if we use native https, but we'll include any if package.json has them
+          npm install
+
+      - name: Run Scraper
+        run: node auto_scrape.js
+
+      - name: Commit and Push SQL
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add *.sql
+          git diff --quiet && git diff --staged --quiet || git commit -m "Automated daily scrape: $(date +'%Y-%m-%d')"
+          git push
