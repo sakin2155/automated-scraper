@@ -8,7 +8,12 @@ const SITE_BASE = 'https://animedekho.app';
 async function fetchHTML(url) {
     return new Promise((resolve, reject) => {
         https.get(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Referer': 'https://animedekho.app/'
+            }
         }, (res) => {
             let data = '';
             res.on('data', chunk => data += chunk);
@@ -30,6 +35,9 @@ async function runAutoScrape() {
 
         if (!match) {
             console.error('❌ Could not find schedule data script in HTML.');
+            console.log('--- HTML DEBUG (First 500 chars) ---');
+            console.log(html.substring(0, 500));
+            console.log('------------------------------------');
             process.exit(1);
         }
 
