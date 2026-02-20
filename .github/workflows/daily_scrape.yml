@@ -2,9 +2,8 @@ name: Daily Anime Scrape
 
 on:
   schedule:
-    # 17:50 UTC is 11:50 PM in UTC+6 (User's timezone roughly)
     - cron: '50 17 * * *'
-  workflow_dispatch: # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -20,8 +19,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # No heavy deps needed if we use native https, but we'll include any if package.json has them
-          npm install
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
 
       - name: Run Scraper
         run: node auto_scrape.js
