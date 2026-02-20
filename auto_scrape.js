@@ -1,126 +1,117 @@
 const fs = require('fs');
-const path = require('path');
+const https = require('https');
 const { chromium } = require('playwright');
 const { AnimeDekhoImporter } = require('./importer.js');
 
-const SITE_BASE = 'https://animedekho.app';
+const JIKAN_API = 'https://api.jikan.moe/v4/schedules';
+
+async function fetchJSON(url) {
+    return new Promise((resolve, reject) => {
+        https.get(url, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => resolve(JSON.parse(data)));
+        }).on('error', reject);
+    });
+}
 
 async function runAutoScrape() {
-    console.log('--- Daily Auto-Scraper (Stealth Browser) Started ---');
+    console.log('--- Daily Auto-Scraper (Jikan + Playwright) Started ---');
 
-    const browser = await chromium.launch({ headless: true });
-    // Use a very high-quality user agent and specific viewport to look more human
-    const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 },
-        deviceScaleFactor: 1,
-    });
-
-    const page = await context.newPage();
-    const importer = new AnimeDekhoImporter();
-    let schedule = [];
-
-    console.log('Fetching schedule via Stealth Playwright...');
+    // 1. Get Schedule from Jikan (Free MAL API - Never blocked)
+    console.log('Fetching today\'s airing anime from Jikan API...');
+    let todaysAnime = [];
     try {
-        // Go to the page - Cloudflare often waits for 5 seconds
-        await page.goto(`${SITE_BASE}/home/`, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        const fullDate = new Date();
+        const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        const dayName = days[fullDate.getDay()];
 
-        console.log('Waiting for Cloudflare challenge to resolve (15s)...');
-        await page.waitForTimeout(15000);
+        const response = await fetchJSON(`${JIKAN_API}?filter=${dayName}`);
+        todaysAnime = response.data.map(item => ({
+            title: item.title_english || item.title,
+            original: item.title
+        }));
 
-        // Get HTML and check if blocked
-        let html = await page.content();
-        let title = await page.title();
-
-        if (title.includes('Just a moment') || title.includes('Attention Required')) {
-            console.log('⚠️ Detected Cloudflare block. Retrying with a reload...');
-            await page.reload({ waitUntil: 'networkidle' });
-            await page.waitForTimeout(10000);
-            html = await page.content();
-            title = await page.title();
-        }
-
-        console.log('Current Page Title:', title);
-
-        const match = html.match(/const scheduleData = (\[[\s\S]*?\]);/);
-
-        if (!match) {
-            console.error('❌ Could not find schedule data script in HTML.');
-            console.log('--- HTML DEBUG (First 500 chars) ---');
-            console.log(html.substring(0, 500));
-            console.log('------------------------------------');
-            await browser.close();
-            process.exit(1);
-        }
-
-        try {
-            schedule = new Function(`return ${match[1]}`)();
-        } catch (e) {
-            console.error('❌ Failed to parse schedule data logic:', e.message);
-            await browser.close();
-            process.exit(1);
-        }
+        console.log(`Successfully fetched ${todaysAnime.length} airing shows for ${dayName}.`);
     } catch (e) {
-        console.error('❌ Error during browser navigation:', e.message);
-        await browser.close();
+        console.error('❌ Failed to fetch from Jikan API:', e.message);
         process.exit(1);
     }
 
-    // 2. Identify Today's Anime
-    const now = new Date();
-    const dayIndex = (now.getDay() + 6) % 7;
-    const todaysAnime = schedule[dayIndex] || [];
-
-    console.log(`Today is Day ${dayIndex}. Found ${todaysAnime.length} anime on schedule.`);
-
     if (todaysAnime.length === 0) {
-        console.log('Nothing to scrape today.');
-        await browser.close();
+        console.log('Nothing airing today.');
         return;
     }
 
+    // 2. Setup Steathy Browser for Search
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    });
+    const page = await context.newPage();
+    const importer = new AnimeDekhoImporter();
+
     // 3. Scrape each one
-    let consolidatedSQL = `-- Automated Export: ${now.toISOString()}\n\n`;
+    let consolidatedSQL = `-- Automated Export: ${new Date().toISOString()}\n\n`;
+    let successCount = 0;
 
-    for (let i = 0; i < todaysAnime.length; i++) {
-        const item = todaysAnime[i];
-        const originalTitle = item.title;
-        let currentTitle = originalTitle;
-        let bestMatch = null;
+    for (let i = 0; i < Math.min(todaysAnime.length, 20); i++) { // Limit to 20 to avoid long runs
+        const anime = todaysAnime[i];
+        console.log(`[${i + 1}/${todaysAnime.length}] Searching for "${anime.title}"...`);
 
-        console.log(`[${i + 1}/${todaysAnime.length}] Searching: "${originalTitle}"...`);
+        try {
+            // Test if search page is blocked
+            const searchUrl = `https://animedekho.app/?s=${encodeURIComponent(anime.title)}`;
+            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-        while (currentTitle.length > 2) {
-            const results = await importer.search(currentTitle);
-            if (results.length > 0) {
-                bestMatch = results[0];
-                break;
+            // Wait for Cloudflare
+            await page.waitForTimeout(5000);
+            const title = await page.title();
+
+            if (title.includes('Attention Required')) {
+                console.log(`⚠️ Search blocked for "${anime.title}". Trying original title...`);
+                await page.goto(`https://animedekho.app/?s=${encodeURIComponent(anime.original)}`, { waitUntil: 'domcontentloaded' });
+                await page.waitForTimeout(5000);
             }
-            currentTitle = currentTitle.slice(0, -1).trim();
-        }
 
-        if (bestMatch) {
-            console.log(`✅ Found Match: ${bestMatch.title}. Extracting...`);
-            try {
-                const details = await importer.getAnimeDetails(bestMatch.url);
-                consolidatedSQL += `-- Data for ${details.title}\n`;
-                consolidatedSQL += `INSERT IGNORE INTO anime (title, description, poster_url, type) VALUES ('${details.title.replace(/'/g, "''")}', '${details.description.replace(/'/g, "''")}', '${details.poster}', '${details.type}');\n\n`;
-                console.log(`✨ Scraped ${details.title} successfully.`);
-            } catch (e) {
-                console.error(`Error scraping ${originalTitle}: ${e.message}`);
+            const html = await page.content();
+
+            // Use importer to parse the search results from the browser HTML
+            // We'll modify importer logic slightly or just parse manually here
+            const linkMatch = html.match(/href="https:\/\/animedekho\.app\/serie\/([^\/]+)\/"/i);
+
+            if (linkMatch) {
+                const slug = linkMatch[1];
+                console.log(`✅ Found: ${slug}. Extracting data...`);
+
+                // Go to details page
+                await page.goto(`https://animedekho.app/serie/${slug}/`, { waitUntil: 'domcontentloaded' });
+                await page.waitForTimeout(3000);
+
+                const detailsHtml = await page.content();
+                const descMatch = detailsHtml.match(/<meta[^>]*name="description"[^>]*content="([^"]+)"/i);
+                const posterMatch = detailsHtml.match(/<meta[^>]*property="og:image"[^>]*content="([^"]+)"/i);
+
+                const desc = descMatch ? descMatch[1] : 'No description';
+                const poster = posterMatch ? posterMatch[1] : '';
+
+                consolidatedSQL += `-- Data for ${anime.title}\n`;
+                consolidatedSQL += `INSERT IGNORE INTO anime (title, description, poster_url, type) VALUES ('${anime.title.replace(/'/g, "''")}', '${desc.replace(/'/g, "''")}', '${poster}', 'series');\n\n`;
+                successCount++;
+            } else {
+                console.log(`❌ Not found on AnimeDekho.`);
             }
-        } else {
-            console.log(`⚠️ No match found for "${originalTitle}". skipping.`);
+        } catch (e) {
+            console.error(`Error processing ${anime.title}: ${e.message}`);
         }
 
         await new Promise(r => setTimeout(r, 2000));
     }
 
-    // 4. Save to file
-    const dateStr = now.toISOString().split('T')[0];
-    const fileName = `daily_export_${dateStr}.sql`;
+    // 4. Save
+    const fileName = `daily_export_${new Date().toISOString().split('T')[0]}.sql`;
     fs.writeFileSync(fileName, consolidatedSQL);
-    console.log(`--- Done! Generated ${fileName} ---`);
+    console.log(`\n--- Done! Successfully scraped ${successCount} shows. Generated ${fileName} ---`);
 
     await browser.close();
 }
