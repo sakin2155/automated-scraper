@@ -1,55 +1,54 @@
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const { chromium } = require('playwright');
 const { AnimeDekhoImporter } = require('./importer.js');
 
 const SITE_BASE = 'https://animedekho.app';
 
-async function fetchHTML(url) {
-    return new Promise((resolve, reject) => {
-        https.get(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Referer': 'https://animedekho.app/'
-            }
-        }, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => resolve(data));
-        }).on('error', reject);
-    });
-}
-
 async function runAutoScrape() {
-    console.log('--- Daily Auto-Scraper Started ---');
+    console.log('--- Daily Auto-Scraper (Playwright) Started ---');
+
+    // Launch browser to bypass Cloudflare "Just a moment"
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    });
+    const page = await context.newPage();
+
     const importer = new AnimeDekhoImporter();
     let schedule = [];
 
     // 1. Get Schedule
-    console.log('Fetching schedule...');
+    console.log('Fetching schedule via Playwright...');
     try {
-        const html = await fetchHTML(`${SITE_BASE}/home/`);
+        await page.goto(`${SITE_BASE}/home/`, { waitUntil: 'networkidle', timeout: 60000 });
+
+        // Wait for the variable to be available or the script to load
+        const html = await page.content();
         const match = html.match(/const scheduleData = (\[[\s\S]*?\]);/);
 
         if (!match) {
             console.error('❌ Could not find schedule data script in HTML.');
-            console.log('--- HTML DEBUG (First 500 chars) ---');
-            console.log(html.substring(0, 500));
-            console.log('------------------------------------');
+            // Diagnostic check: is there a Cloudflare title?
+            const title = await page.title();
+            console.log('Current Page Title:', title);
+            if (title.includes('Just a moment')) {
+                console.log('⚠️ Still stuck on Cloudflare challenge. Need a manual solution or more stealth.');
+            }
+            await browser.close();
             process.exit(1);
         }
 
-        // Use a more flexible parser for JS objects
         try {
             schedule = new Function(`return ${match[1]}`)();
         } catch (e) {
             console.error('❌ Failed to parse schedule data logic:', e.message);
+            await browser.close();
             process.exit(1);
         }
     } catch (e) {
         console.error('❌ Error fetching schedule:', e.message);
+        await browser.close();
         process.exit(1);
     }
 
@@ -62,6 +61,7 @@ async function runAutoScrape() {
 
     if (todaysAnime.length === 0) {
         console.log('Nothing to scrape today.');
+        await browser.close();
         return;
     }
 
@@ -107,6 +107,8 @@ async function runAutoScrape() {
     const fileName = `daily_export_${dateStr}.sql`;
     fs.writeFileSync(fileName, consolidatedSQL);
     console.log(`--- Done! Generated ${fileName} ---`);
+
+    await browser.close();
 }
 
 runAutoScrape().catch(console.error);
